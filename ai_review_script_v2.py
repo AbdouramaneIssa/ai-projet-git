@@ -1,14 +1,23 @@
 import os
 import sys
 import json
-from openai import OpenAI
+from google import genai
+from google.genai import types
+from google.genai.errors import APIError
 
-# Configuration de l'API OpenAI (compatible avec l'API Gemini via la variable d'environnement)
+# Configuration de l'API Gemini
 try:
-    # L'URL de base est définie par l'environnement si l'utilisateur utilise un proxy Gemini
-    # Sinon, elle utilise l'API OpenAI par défaut.
-    client = OpenAI()
-except Exception as e:
+    # La clé est lue automatiquement depuis l'environnement (GEMINI_API_KEY ou OPENAI_API_KEY)
+    # Nous allons utiliser OPENAI_API_KEY dans GitHub Secrets, mais la renommer en GEMINI_API_KEY ici
+    # Pour simplifier, nous allons lire directement la clé de l'environnement
+    api_key = os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        raise ValueError("La clé API Gemini n'est pas configurée dans les variables d'environnement.")
+        
+    # Initialisation du client Google GenAI
+    client = genai.Client(api_key=api_key)
+except (ValueError, Exception) as e:
+    print(f"Erreur lors de l'initialisation du client Gemini: {e}", file=sys.stderr)
     client = None
 
 def generate_html_email(analysis_report):
@@ -63,7 +72,7 @@ def generate_html_email(analysis_report):
 
 def analyze_code_with_ai(code_diff):
     """
-    Appelle l'API de l'IA pour obtenir un rapport d'analyse détaillé.
+    Appelle l'API Gemini pour obtenir un rapport d'analyse détaillé.
     """
     # Le prompt est ajusté pour répondre aux exigences de l'utilisateur
     system_prompt = (
@@ -83,24 +92,27 @@ def analyze_code_with_ai(code_diff):
 
     if client:
         try:
-            # Utilisation d'un modèle rapide et performant
-            response = client.chat.completions.create(
-                model="gpt-4o-mini", # Modèle compatible OpenAI
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ]
+            # Utilisation du modèle gemini-2.5-flash
+            response = client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=[system_prompt, user_prompt]
             )
-            return response.choices[0].message.content
-        except Exception as e:
+            return response.text
+        except APIError as e:
             return (
-                f"**Échec de l'Analyse IA**\n\n"
+                f"**Échec de l'Analyse IA (Gemini API)**\n\n"
                 f"Le système d'IA n'a pas pu traiter votre requête (Erreur: {e}). "
-                "Veuillez vérifier la configuration de la clé API ou réessayer plus tard."
+                "Veuillez vérifier la configuration de la clé API Gemini."
+            )
+        except Exception as e:
+             return (
+                f"**Échec de l'Analyse IA (Erreur Inconnue)**\n\n"
+                f"Le système d'IA a rencontré une erreur inattendue: {e}."
             )
     else:
+        # Simulation si le client Gemini n'est pas disponible
         return (
-            "**Rapport d'Analyse Simulé**\n\n"
+            "**Rapport d'Analyse Simulé (Client Gemini Non Initialisé)**\n\n"
             "**Titre et Évaluation Globale** : Push Impeccable ! 🎉\n\n"
             "**Points Forts:**\n"
             "* Excellente gestion des dépendances dans le fichier `package.json`.\n\n"
