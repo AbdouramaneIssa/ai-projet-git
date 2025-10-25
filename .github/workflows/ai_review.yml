@@ -1,4 +1,4 @@
-name: AI Code Review and Email Notification
+name: AI Code Review and Email Notification (Gemini)
 
 on:
   push:
@@ -38,18 +38,20 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install dependencies
+      - name: Install dependencies (Google GenAI)
         run: |
           python -m pip install --upgrade pip
-          pip install openai
+          # Installation de la librairie officielle de Google pour Gemini
+          pip install google-genai
 
-      - name: Run AI Review Script
+      - name: Run AI Review Script (Gemini)
         run: |
           # Exécute le script Python mis à jour
-          python ai_review_script_v2.py code_changes.diff review_email.html
+          python ai_review_script_gemini.py code_changes.diff review_email.html
         env:
-          # Passe la clé API de manière sécurisée au script Python
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # La clé API Gemini est passée via le secret OPENAI_API_KEY
+          # Le script Python est configuré pour lire cette variable
+          GEMINI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
 
       - name: Send Email Notification
         uses: dawidd6/action-send-mail@v3
