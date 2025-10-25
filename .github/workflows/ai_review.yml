@@ -1,0 +1,68 @@
+name: AI Code Review and Email Notification
+
+on:
+  push:
+    branches:
+      - main # Exécuter uniquement sur les push vers la branche principale
+      - master # Si vous utilisez 'master'
+
+jobs:
+  ai_review:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        # fetch-depth: 0 est crucial pour permettre le calcul du diff entre commits
+        with:
+          fetch-depth: 0
+
+      - name: Get last commit author email
+        id: get_email
+        run: |
+          # Récupère l'email du dernier commiteur
+          COMMIT_EMAIL=$(git log -1 --pretty=format:'%ae')
+          echo "commit_email=$COMMIT_EMAIL" >> $GITHUB_OUTPUT
+
+      - name: Calculate code diff
+        id: calculate_diff
+        run: |
+          # Calcule le diff entre le commit précédent et le commit actuel
+          # HEAD^ est le commit juste avant le HEAD actuel
+          DIFF_CONTENT=$(git diff HEAD^ HEAD)
+          # Écrit le diff dans un fichier temporaire
+          echo "$DIFF_CONTENT" > code_changes.diff
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install openai
+
+      - name: Run AI Review Script
+        run: |
+          # Exécute le script Python mis à jour
+          python ai_review_script_v2.py code_changes.diff review_email.html
+        env:
+          # Passe la clé API de manière sécurisée au script Python
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+      - name: Send Email Notification
+        uses: dawidd6/action-send-mail@v3
+        with:
+          # Configuration du serveur SMTP (via les secrets GitHub)
+          server_address: ${{ secrets.SMTP_SERVER }}
+          server_port: ${{ secrets.SMTP_PORT }}
+          username: ${{ secrets.SMTP_USERNAME }}
+          password: ${{ secrets.SMTP_PASSWORD }}
+          # Configuration de l'email
+          subject: '[AI Code Review] Rapport pour votre dernier push'
+          to: ${{ steps.get_email.outputs.commit_email }}
+          from: ${{ secrets.SMTP_USERNAME }}
+          # Corps de l'email en HTML
+          html_body: file://review_email.html
+
