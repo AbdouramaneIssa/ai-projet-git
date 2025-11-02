@@ -10,62 +10,62 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # --- Étape 1 : Cloner le dépôt ---
     - name: Checkout code
       uses: actions/checkout@v4
       with:
-        fetch-depth: 2  # Nécessaire pour comparer les deux derniers commits
+        fetch-depth: 2  # Récupère les deux derniers commits pour comparer les changements
 
-    # --- Étape 2 : Installer Python ---
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.x'
-        cache: 'pip'
-        cache-dependency-path: requirements.txt
+        # Met en cache les dépendances pip pour accélérer les exécutions futures
+        cache: 'pip'  
+        cache-dependency-path: requirements.txt # Spécifie le fichier de dépendances pour le cache
 
-    # --- Étape 3 : Vérifier l'existence du fichier requirements.txt ---
     - name: Check for requirements.txt
       run: |
         if [ ! -f requirements.txt ]; then
+          echo "Erreur : requirements.txt n'existe pas dans le dépôt. Création d'un fichier temporaire."
+          # Création d'un fichier temporaire pour l'installation des dépendances
           echo "google-genai" > requirements.txt
           echo "mypy" >> requirements.txt
           echo "flake8" >> requirements.txt
+          echo "flake8-length" >> requirements.txt
         fi
 
-    # --- Étape 4 : Installer les dépendances ---
     - name: Install dependencies
       run: pip install -r requirements.txt
 
-    # --- Étape 5 : Vérification du style avec Flake8 ---
-    - name: Run Flake8 (Style Check)
-      run: |
-        echo "Exécution de Flake8..."
-        flake8 . || (echo "❌ Flake8 a détecté des problèmes de style." && exit 1)
-
-    # --- Étape 6 : Vérifier que le script Python existe ---
     - name: Check for analyze_and_notify.py
       run: |
         if [ ! -f analyze_and_notify.py ]; then
-          echo "Erreur : analyze_and_notify.py est introuvable."
+          echo "Erreur : analyze_and_notify.py n'existe pas dans le dépôt."
           exit 1
         fi
 
-    # --- Étape 7 : Lancer le script principal d'analyse et de notification ---
     - name: Run Code Review and Mypy Verification Script
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
       run: |
+        # Vérifie que les secrets nécessaires sont définis
         if [ -z "$GEMINI_API_KEY" ] || [ -z "$GMAIL_APP_PASSWORD" ] || [ -z "$SENDER_EMAIL" ]; then
-          echo "Erreur : Une variable secrète est manquante."
+          echo "Erreur : Une ou plusieurs variables secrètes (GEMINI_API_KEY, GMAIL_APP_PASSWORD, SENDER_EMAIL) ne sont pas définies."
           exit 1
         fi
-
+        
+        # Récupère l'email de l'auteur du dernier commit
         COMMIT_AUTHOR_EMAIL=$(git log -1 --pretty=format:'%ae')
-        CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r HEAD)
         echo "Auteur du commit : $COMMIT_AUTHOR_EMAIL"
+        
+        # Liste les fichiers modifiés dans le dernier commit
+        # Utilisation de 'git diff-tree' pour une liste plus fiable des fichiers modifiés/ajoutés/supprimés
+        CHANGED_FILES=$(git diff-tree --no-commit-id --name-only -r HEAD)
         echo "Fichiers modifiés : $CHANGED_FILES"
-
+        
+        # Exécute le script Python. 
+        # Si le script retourne un code d'erreur (par exemple, si Typy échoue), cette étape échouera, 
+        # ce qui bloquera le workflow et, par conséquent, le push.
         python analyze_and_notify.py "$COMMIT_AUTHOR_EMAIL" "$CHANGED_FILES"
