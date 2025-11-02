@@ -1,11 +1,3 @@
-"""
-Script Python exécuté automatiquement par GitHub Actions.
-Objectif :
-- Vérifier le typage du code avec Mypy.
-- Envoyer un e-mail automatique avec un résumé généré par Gemini.
-- Retourner un code d’échec (1) si Mypy échoue → cela bloque le workflow CI.
-"""
-
 import os
 import sys
 import smtplib
@@ -14,12 +6,13 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from google import genai
 
-# --- 🔐 Récupération des secrets définis dans GitHub Actions ---
+# --- Configuration ---
+# Récupération des secrets via les variables d'environnement définies dans GitHub Actions
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL")
 
-# --- 📩 Vérification des arguments ---
+# Le destinataire est le premier argument passé au script (l'email du committer)
 if len(sys.argv) < 3:
     print("Erreur: L'email du destinataire et la liste des fichiers modifiés sont requis.")
     sys.exit(1)
@@ -27,106 +20,211 @@ if len(sys.argv) < 3:
 RECIPIENT_EMAIL = sys.argv[1]
 CHANGED_FILES = sys.argv[2].split()
 
-# --- 📂 Lecture sécurisée de fichiers ---
-def get_file_content(file_path: str) -> str:
-    """Lit les 100 premières lignes d'un fichier pour l'analyse."""
+# --- Fonctions d'aide ---
+
+def get_file_content(file_path):
+    """Lit le contenu d'un fichier."""
     try:
+        # Lire les 100 premières lignes pour éviter de dépasser la limite de tokens
         with open(file_path, 'r', encoding='utf-8') as f:
             content = "".join(f.readlines()[:100])
         return f"--- Contenu du fichier: {file_path} ---\n{content}\n"
     except Exception as e:
-        return f"--- Impossible de lire {file_path} (Erreur: {e}) ---\n"
+        return f"--- Impossible de lire le fichier: {file_path} (Erreur: {e}) ---\n"
 
-# --- 🧠 Vérification du typage Mypy ---
-def run_mypy_verification():
-    """Exécute Mypy et renvoie (succès, rapport)."""
-    print("🚀 Lancement de la vérification Mypy...")
+def run_flake8_verification():
+    """Exécute la vérification Flake8 et retourne le résultat."""
+    print("Début de la vérification Flake8...")
     try:
+        # Exécuter 'flake8' pour vérifier tous les fichiers Python dans le répertoire courant
         result = subprocess.run(
-            ['mypy', '.', '--ignore-missing-imports'],
+            ['flake8', '.'],
             capture_output=True,
             text=True,
             check=False
         )
-        success = result.returncode == 0
-        report = result.stdout
-        print(f"✅ Vérification terminée. Succès: {success}")
-        return success, report
+        
+        flake8_success = result.returncode == 0
+        flake8_report = result.stdout + result.stderr
+        
+        print(f"Vérification Flake8 terminée. Succès: {flake8_success}")
+        
+        return flake8_success, flake8_report
+        
+    except FileNotFoundError:
+        return False, "Erreur: La commande 'flake8' n'a pas été trouvée. Assurez-vous que Flake8 est installé."
     except Exception as e:
-        return False, f"Erreur lors de l'exécution de Mypy: {e}"
+        return False, f"Erreur inattendue lors de l'exécution de Flake8: {e}"
 
-# --- 💬 Préparation du prompt IA ---
-def generate_prompt(changed_files, mypy_report):
-    """Construit le prompt pour Gemini, avec le rapport Mypy."""
-    mypy_section = (
-        "--- Rapport de Vérification Mypy ---\n"
-        f"{mypy_report}\n"
-        "------------------------------------\n\n"
-    )
+def run_mypy_verification():
+    """Exécute la vérification Mypy et retourne le résultat."""
+    print("Début de la vérification Mypy...")
+    try:
+        # Exécuter 'mypy .' pour vérifier tous les fichiers Python dans le répertoire courant
+        # Nous utilisons 'capture_output=True' pour récupérer stdout et stderr
+        # 'text=True' pour décoder la sortie en texte
+        # '--ignore-missing-imports' est souvent utile dans les projets CI/CD
+        result = subprocess.run(
+            ['mypy', '.', '--ignore-missing-imports'],
+            capture_output=True,
+            text=True,
+            check=False # Ne lève pas d'exception en cas d'échec (code de retour non nul)
+        )
+        
+        # Le code de retour est 0 si tout est OK, non nul en cas d'erreur de typage
+        mypy_success = result.returncode == 0
+        
+        # Mypy écrit son rapport sur stdout
+        mypy_report = result.stdout
+        
+        print(f"Vérification Mypy terminée. Succès: {mypy_success}")
+        
+        return mypy_success, mypy_report
+        
+    except FileNotFoundError:
+        # Cela ne devrait pas arriver si 'mypy' est installé, mais c'est une bonne pratique
+        return False, "Erreur: La commande 'mypy' n'a pas été trouvée. Assurez-vous que Mypy est installé."
+    except Exception as e:
+        return False, f"Erreur inattendue lors de l'exécution de Mypy: {e}"
+
+def generate_prompt(changed_files, mypy_report, flake8_report):
+    """Génère le prompt pour l'IA en incluant le contenu des fichiers et le rapport Mypy."""
+    
+    mypy_section = ""
+    if mypy_report:
+        mypy_section = (
+            "--- Rapport de Vérification Mypy ---\n"
+            f"{mypy_report}\n"
+            "------------------------------------\n\n"
+        )
+        
+    flake8_section = ""
+    if flake8_report:
+        flake8_section = (
+            "--- Rapport de Vérification Flake8 (Style/Longueur) ---\n"
+            f"{flake8_report}\n"
+            "------------------------------------------------------\n\n"
+        )
+        
     prompt = (
-        "Vous êtes un expert en typage Python. "
-        "Analysez les fichiers suivants et les erreurs Mypy. "
-        "Expliquez clairement au développeur comment corriger les erreurs "
-        "et rédigez un rapport HTML esthétique et professionnel.\n\n"
+        "Vous êtes un expert en revue de code, en typage statique (Mypy) et en style de code (Flake8). Votre tâche est d'analyser les changements de code suivants, "
+        "en vous concentrant sur la qualité, la cohérence, les erreurs potentielles et les améliorations. "
+        "**Priorité absolue :** Si les rapports ci-dessous contiennent des erreurs (Mypy ou Flake8), vous devez les mettre en évidence "
+        "et expliquer clairement au développeur comment les corriger pour que le push soit accepté. "
+        "Après l'analyse, vous devez générer une réponse **uniquement** sous forme de code HTML complet et esthétique "
+        "pour un e-mail de feedback. L'e-mail doit être très beau, professionnel et convivial. "
+        "Si le code est impeccable (y compris Mypy et Flake8), dites-le et proposez des bonnes pratiques. S'il y a des erreurs ou des suggestions, mentionnez-les clairement, "
+        "en indiquant les lignes si possible, et proposez des corrections. "
+        "Le code HTML doit être complet (avec <html>, <body>, etc.) et utiliser des styles en ligne (CSS) "
+        "pour garantir un bon affichage dans tous les clients de messagerie. Utilisez une palette de couleurs agréable (par exemple, bleu, vert, gris clair)."
+        "\n\n"
         f"{mypy_section}"
+        f"{flake8_section}"
+        "--- Fichiers Modifiés ---\n"
     )
+    
     for file in changed_files:
-        if file.startswith('.github/') or not file.endswith('.py'):
+        # Ne pas analyser les fichiers de configuration de GitHub Actions ou les fichiers binaires
+        if file.startswith('.github/') or file.endswith(('.png', '.jpg', '.gif', '.bin')):
             continue
         prompt += get_file_content(file)
+        
     return prompt
 
-# --- 🤖 Appel de l'API Gemini ---
-def get_ai_review(prompt: str) -> str:
-    """Génère le rapport HTML à partir de Gemini."""
+def get_ai_review(prompt):
+    """Appelle l'API Gemini pour obtenir la revue de code HTML."""
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
+        
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-2.5-flash', # Utilisation d'un modèle rapide et efficace
             contents=prompt
         )
-        html = response.text.strip()
-        if html.startswith("```html"):
-            html = html.strip("```html").strip("```").strip()
-        return html
+        
+        # L'IA est instruite de renvoyer uniquement le code HTML
+        # On essaie d'extraire le bloc de code si l'IA l'a mis dans des balises markdown
+        html_content = response.text.strip()
+        if html_content.startswith("```html"):
+            html_content = html_content.strip("```html").strip("```").strip()
+            
+        return html_content
+        
     except Exception as e:
-        return f"<h1>Erreur Gemini</h1><p>{e}</p>"
+        return f"<h1>Erreur d'API Gemini</h1><p>Impossible d'obtenir la revue de code. Erreur: {e}</p>"
 
-# --- 📧 Envoi d'email ---
 def send_email(recipient, subject, html_body):
-    """Envoie un email HTML via SMTP (Gmail)."""
+    """Envoie l'email HTML via SMTP (Gmail)."""
     try:
+        # Configuration de l'email
         msg = MIMEMultipart('alternative')
         msg['From'] = SENDER_EMAIL
         msg['To'] = recipient
         msg['Subject'] = subject
+        
+        # Attacher le corps HTML
         msg.attach(MIMEText(html_body, 'html'))
-
+        
+        # Connexion au serveur SMTP de Gmail
         server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+        server.ehlo()
         server.login(SENDER_EMAIL, GMAIL_APP_PASSWORD)
+        
+        # Envoi de l'email
         server.sendmail(SENDER_EMAIL, recipient, msg.as_string())
         server.close()
-        print(f"📨 Email envoyé à {recipient}")
+        
+        print(f"Succès: Email de revue de code envoyé à {recipient}")
+        
     except Exception as e:
-        print(f"⚠️ Échec de l'envoi d'email: {e}")
+        print(f"Erreur: Échec de l'envoi de l'email à {recipient}. Vérifiez le mot de passe d'application Gmail. Erreur: {e}")
+        # En cas d'échec, nous affichons le corps HTML pour le débogage
+        print("\n--- Contenu HTML non envoyé (pour débogage) ---\n")
         print(html_body)
+        print("\n----------------------------------------------------\n")
+        # Nous ne levons pas d'exception ici pour ne pas bloquer le workflow
+        # si l'envoi d'email échoue après une revue réussie.
 
-# --- 🚦 Logique principale ---
-print(f"Analyse du push pour {RECIPIENT_EMAIL}")
-print(f"Fichiers modifiés : {', '.join(CHANGED_FILES)}")
+# --- Logique principale ---
 
+print(f"Début de l'analyse pour le push de: {RECIPIENT_EMAIL}")
+print(f"Fichiers modifiés: {', '.join(CHANGED_FILES)}")
+
+# 1. Exécuter les vérifications
 mypy_success, mypy_report = run_mypy_verification()
-review_prompt = generate_prompt(CHANGED_FILES, mypy_report)
+flake8_success, flake8_report = run_flake8_verification()
+
+# Déterminer le succès global
+global_success = mypy_success and flake8_success
+
+# 2. Préparer le prompt pour l'IA (inclut les rapports Mypy et Flake8)
+review_prompt = generate_prompt(CHANGED_FILES, mypy_report, flake8_report)
+
+# 3. Obtenir la revue de l'IA
+if global_success:
+    email_subject = "✅ Revue de Code Automatisée - Succès"
+else:
+    email_subject = "❌ Revue de Code Automatisée - Échec"
+
 html_review = get_ai_review(review_prompt)
 
-subject = "✅ Vérification Mypy réussie" if mypy_success else "❌ Échec Mypy - Typage à corriger"
-send_email(RECIPIENT_EMAIL, subject, html_review)
+# 4. Envoyer l'email
+send_email(RECIPIENT_EMAIL, email_subject, html_review)
 
-# --- 🧱 Code de sortie ---
-if not mypy_success:
-    print("❌ Erreurs détectées, le workflow va échouer.")
-    print(mypy_report)
-    sys.exit(1)  # ⚠️ IMPORTANT : ceci fait échouer le workflow GitHub Actions
+# 5. Déterminer le code de sortie et la variable de blocage
+# Le script retourne le code de sortie 1 si l'une des vérifications échoue, bloquant le push.
+# Nous allons simuler la "variable de valeur" demandée par le professeur en utilisant le code de sortie.
+if not global_success:
+    print("Échec des vérifications (Mypy ou Flake8). Le script va se terminer avec un code d'erreur pour bloquer le push.")
+    # Afficher les rapports complets pour le débogage du workflow
+    if not mypy_success:
+        print("\n--- Rapport Mypy Complet ---\n")
+        print(mypy_report)
+        print("\n----------------------------\n")
+    if not flake8_success:
+        print("\n--- Rapport Flake8 Complet ---\n")
+        print(flake8_report)
+        print("\n----------------------------\n")
+    sys.exit(1)
 else:
-    print("✅ Tout est conforme. Fin du script.")
-    sys.exit(0)  # Le workflow passe
+    print("Vérifications réussies. Le script va se terminer avec succès.")
+    sys.exit(0)
