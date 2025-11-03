@@ -1,9 +1,11 @@
-name: Code Review and Notification
+name: Code Quality and AI Review
 
 on:
   push:
     branches:
       - main
+  pull_request:
+    branches: [ main ] # Ajouté pour tester les PRs aussi
 
 jobs:
   review:
@@ -19,23 +21,39 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
-        python-version: '3.x'
+        python-version: '3.11' # Changement à 3.11 pour une meilleure compatibilité
 
-    - name: Install dependencies
+    - name: Install dependencies (Linters, Type Checkers et Scripts)
       run: pip install -r requirements.txt
 
+    # ⬇️ NOUVELLE ÉTAPE 1 : VÉRIFICATION DU TYPAGE (MYPY) ⬇️
+    - name: Type Checking with Mypy
+      # Utilise '|| true' pour que le workflow continue en cas d'erreurs
+      # (Ceci est essentiel car nous voulons que le script IA analyse les erreurs de Mypy et Flake8)
+      run: mypy main_script.py || true
+      id: mypy_check 
+      
+    # ⬇️ NOUVELLE ÉTAPE 2 : VÉRIFICATION DU STYLE (FLAKE8) ⬇️
+    - name: Style Check with Flake8
+      # Utilise '|| true' pour capturer les erreurs sans bloquer
+      run: flake8 main_script.py || true
+      id: flake8_check
+
+    # L'étape IA s'exécute MAINTENANT même si Mypy/Flake8 échoue, car elle en a besoin.
     - name: Run Code Review Script
       env:
-        # Pass the secrets securely to the script as environment variables
+        # Les secrets doivent être configurés dans les paramètres GitHub du dépôt
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
         SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
       run: |
-        # Get the email of the committer who made the push
+        # 1. Récupérer l'e-mail du committer (développeur à notifier)
         COMMIT_AUTHOR_EMAIL=$(git log -1 --pretty=format:'%ae')
         
-        # Determine the files that were changed in the last commit
-        CHANGED_FILES=$(git diff --name-only HEAD^ HEAD)
+        # 2. Déterminer les fichiers Python changés
+        # Cela s'assure que nous n'analysons que les fichiers .py modifiés
+        CHANGED_FILES=$(git diff --name-only HEAD^ HEAD | grep '\.py$')
         
-        # Execute the Python script
+        # 3. Exécuter le script Python pour analyser et notifier
+        # Le script analyse les fichiers changés et envoie le rapport via l'IA
         python analyze_and_notify.py "$COMMIT_AUTHOR_EMAIL" "$CHANGED_FILES"
