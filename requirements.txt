@@ -1,9 +1,4 @@
-google-genai
-requests
-# Outil de typage
 mypy
-# Outil de style (Linter)
 flake8
-# Outil pour l'exécution IA (si le script python le requiert)
-# openai # Exemple
-# google-genai # Exemple
+flake8-length
+google-genai

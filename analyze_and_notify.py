@@ -1,6 +1,7 @@
 import os
 import sys
 import smtplib
+import subprocess
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from google import genai
@@ -31,18 +32,94 @@ def get_file_content(file_path):
     except Exception as e:
         return f"--- Impossible de lire le fichier: {file_path} (Erreur: {e}) ---\n"
 
-def generate_prompt(changed_files):
-    """Génère le prompt pour l'IA en incluant le contenu des fichiers."""
+def run_flake8_verification():
+    """Exécute la vérification Flake8 et retourne le résultat."""
+    print("Début de la vérification Flake8...")
+    try:
+        # Exécuter 'flake8' pour vérifier tous les fichiers Python dans le répertoire courant
+        result = subprocess.run(
+            ['flake8', '.'],
+            capture_output=True,
+            text=True,
+            check=False
+        )
+        
+        flake8_success = result.returncode == 0
+        flake8_report = result.stdout + result.stderr
+        
+        print(f"Vérification Flake8 terminée. Succès: {flake8_success}")
+        
+        return flake8_success, flake8_report
+        
+    except FileNotFoundError:
+        return False, "Erreur: La commande 'flake8' n'a pas été trouvée. Assurez-vous que Flake8 est installé."
+    except Exception as e:
+        return False, f"Erreur inattendue lors de l'exécution de Flake8: {e}"
+
+def run_mypy_verification():
+    """Exécute la vérification Mypy et retourne le résultat."""
+    print("Début de la vérification Mypy...")
+    try:
+        # Exécuter 'mypy .' pour vérifier tous les fichiers Python dans le répertoire courant
+        # Nous utilisons 'capture_output=True' pour récupérer stdout et stderr
+        # 'text=True' pour décoder la sortie en texte
+        # '--ignore-missing-imports' est souvent utile dans les projets CI/CD
+        result = subprocess.run(
+            ['mypy', '.', '--ignore-missing-imports'],
+            capture_output=True,
+            text=True,
+            check=False # Ne lève pas d'exception en cas d'échec (code de retour non nul)
+        )
+        
+        # Le code de retour est 0 si tout est OK, non nul en cas d'erreur de typage
+        mypy_success = result.returncode == 0
+        
+        # Mypy écrit son rapport sur stdout
+        mypy_report = result.stdout
+        
+        print(f"Vérification Mypy terminée. Succès: {mypy_success}")
+        
+        return mypy_success, mypy_report
+        
+    except FileNotFoundError:
+        # Cela ne devrait pas arriver si 'mypy' est installé, mais c'est une bonne pratique
+        return False, "Erreur: La commande 'mypy' n'a pas été trouvée. Assurez-vous que Mypy est installé."
+    except Exception as e:
+        return False, f"Erreur inattendue lors de l'exécution de Mypy: {e}"
+
+def generate_prompt(changed_files, mypy_report, flake8_report):
+    """Génère le prompt pour l'IA en incluant le contenu des fichiers et le rapport Mypy."""
+    
+    mypy_section = ""
+    if mypy_report:
+        mypy_section = (
+            "--- Rapport de Vérification Mypy ---\n"
+            f"{mypy_report}\n"
+            "------------------------------------\n\n"
+        )
+        
+    flake8_section = ""
+    if flake8_report:
+        flake8_section = (
+            "--- Rapport de Vérification Flake8 (Style/Longueur) ---\n"
+            f"{flake8_report}\n"
+            "------------------------------------------------------\n\n"
+        )
+        
     prompt = (
-        "Vous êtes un expert en revue de code. Votre tâche est d'analyser les changements de code suivants, "
+        "Vous êtes un expert en revue de code, en typage statique (Mypy) et en style de code (Flake8). Votre tâche est d'analyser les changements de code suivants, "
         "en vous concentrant sur la qualité, la cohérence, les erreurs potentielles et les améliorations. "
+        "**Priorité absolue :** Si les rapports ci-dessous contiennent des erreurs (Mypy ou Flake8), vous devez les mettre en évidence "
+        "et expliquer clairement au développeur comment les corriger pour que le push soit accepté. "
         "Après l'analyse, vous devez générer une réponse **uniquement** sous forme de code HTML complet et esthétique "
         "pour un e-mail de feedback. L'e-mail doit être très beau, professionnel et convivial. "
-        "Si le code est impeccable, dites-le. S'il y a des erreurs ou des suggestions, mentionnez-les clairement, "
+        "Si le code est impeccable (y compris Mypy et Flake8), dites-le et proposez des bonnes pratiques. S'il y a des erreurs ou des suggestions, mentionnez-les clairement, "
         "en indiquant les lignes si possible, et proposez des corrections. "
         "Le code HTML doit être complet (avec <html>, <body>, etc.) et utiliser des styles en ligne (CSS) "
         "pour garantir un bon affichage dans tous les clients de messagerie. Utilisez une palette de couleurs agréable (par exemple, bleu, vert, gris clair)."
         "\n\n"
+        f"{mypy_section}"
+        f"{flake8_section}"
         "--- Fichiers Modifiés ---\n"
     )
     
@@ -104,21 +181,50 @@ def send_email(recipient, subject, html_body):
         print("\n--- Contenu HTML non envoyé (pour débogage) ---\n")
         print(html_body)
         print("\n----------------------------------------------------\n")
+        # Nous ne levons pas d'exception ici pour ne pas bloquer le workflow
+        # si l'envoi d'email échoue après une revue réussie.
 
 # --- Logique principale ---
 
 print(f"Début de l'analyse pour le push de: {RECIPIENT_EMAIL}")
 print(f"Fichiers modifiés: {', '.join(CHANGED_FILES)}")
 
-# 1. Préparer le prompt
-review_prompt = generate_prompt(CHANGED_FILES)
+# 1. Exécuter les vérifications
+mypy_success, mypy_report = run_mypy_verification()
+flake8_success, flake8_report = run_flake8_verification()
 
-# 2. Obtenir la revue de l'IA
+# Déterminer le succès global
+global_success = mypy_success and flake8_success
+
+# 2. Préparer le prompt pour l'IA (inclut les rapports Mypy et Flake8)
+review_prompt = generate_prompt(CHANGED_FILES, mypy_report, flake8_report)
+
+# 3. Obtenir la revue de l'IA
+if global_success:
+    email_subject = "✅ Revue de Code Automatisée - Succès"
+else:
+    email_subject = "❌ Revue de Code Automatisée - Échec"
+
 html_review = get_ai_review(review_prompt)
-
-# 3. Déterminer le sujet de l'email
-# On pourrait utiliser une analyse plus fine, mais pour l'instant, un sujet générique suffit
-email_subject = "Revue de Code Automatisée - Push sur ai-projet-git"
 
 # 4. Envoyer l'email
 send_email(RECIPIENT_EMAIL, email_subject, html_review)
+
+# 5. Déterminer le code de sortie et la variable de blocage
+# Le script retourne le code de sortie 1 si l'une des vérifications échoue, bloquant le push.
+# Nous allons simuler la "variable de valeur" demandée par le professeur en utilisant le code de sortie.
+if not global_success:
+    print("Échec des vérifications (Mypy ou Flake8). Le script va se terminer avec un code d'erreur pour bloquer le push.")
+    # Afficher les rapports complets pour le débogage du workflow
+    if not mypy_success:
+        print("\n--- Rapport Mypy Complet ---\n")
+        print(mypy_report)
+        print("\n----------------------------\n")
+    if not flake8_success:
+        print("\n--- Rapport Flake8 Complet ---\n")
+        print(flake8_report)
+        print("\n----------------------------\n")
+    sys.exit(1)
+else:
+    print("Vérifications réussies. Le script va se terminer avec succès.")
+    sys.exit(0)
